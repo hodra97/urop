@@ -5,8 +5,9 @@ and displayed by franka_fk_task_visualized.py. Each chosen joint angle is
 HOME_Q + its offset; for example, joint4 has a nonzero home angle, so an
 offset of -0.10 rad does not mean its final angle is -0.10 rad.
 
-The FK formula lives in franka_fk_task.py and does not need to change when
-you choose new angles. These offsets select a posture, not a timed path.
+The FK formula lives in fk_algorithm.py and does not need to change when
+you choose new angles. panda_model.py loads the robot geometry. These offsets
+select a posture, not a timed path.
 """
 
 import numpy as np
