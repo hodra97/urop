@@ -9,7 +9,7 @@ Reference: https://modernrobotics.northwestern.edu/nu-gm-book-resource/5-1-1-spa
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from fk_algorithm import (
+from FK_algorithm import (
     fk_manual, joint_transform, skew, validate_geometry,
     validate_joint_angles, validate_joint_types,
 )

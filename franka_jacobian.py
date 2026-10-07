@@ -10,7 +10,7 @@ import mujoco
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-import fk_algorithm
+import FK_algorithm
 import jacobian_algorithm
 import joint_inputs
 from robot_config import robot
@@ -31,7 +31,7 @@ def jacobians_manual(q: ArrayLike) -> tuple[NDArray[np.float64], ...]:
 
 def jacobians_mujoco(q: ArrayLike) -> tuple[NDArray[np.float64], ...]:
     """Convert MuJoCo's endpoint derivatives into space/body twists."""
-    transform = robot.transform_at(fk_algorithm.validate_joint_angles(q, robot.joint_count))
+    transform = robot.transform_at(FK_algorithm.validate_joint_angles(q, robot.joint_count))
     jacp = np.zeros((3, robot.model.nv))
     jacr = np.zeros((3, robot.model.nv))
     mujoco.mj_jacBody(

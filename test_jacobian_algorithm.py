@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 from numpy.testing import assert_allclose
 
-from fk_algorithm import fk_manual, revolute_joint_transform
+from FK_algorithm import fk_manual, revolute_joint_transform
 from jacobian_algorithm import (
     adjoint, jacobian_body, jacobian_space, space_screw_axes, transform_inverse,
 )

@@ -11,7 +11,7 @@ import mujoco
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from fk_algorithm import validate_joint_angles
+from FK_algorithm import validate_joint_angles
 
 
 class RobotModel:

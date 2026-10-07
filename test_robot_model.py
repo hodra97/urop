@@ -109,6 +109,11 @@ class RobotModelTests(unittest.TestCase):
         class Viewer:
             def __init__(self):
                 self.frames = 0
+                self.user_scn = mujoco.MjvScene(robot.model, maxgeom=200)
+                self.texts = None
+
+            def set_texts(self, texts):
+                self.texts = texts
 
             def is_running(self):
                 return self.frames < 3
@@ -139,6 +144,9 @@ class RobotModelTests(unittest.TestCase):
                             self.assertFalse(np.allclose(robot.data.qpos[robot.qpos_indices], robot.home_q))
                     self.assertEqual(viewer.frames, 3)
                     self.assertTrue(np.all(np.isfinite(robot.data.qpos)))
+                    if module is franka_fk_GUI:
+                        self.assertGreater(viewer.user_scn.ngeom, 3)
+                        self.assertIn("Desired pose", viewer.texts[2])
 
     def test_unlimited_joint_sampling_is_finite(self):
         model = mujoco.MjModel.from_xml_string(
@@ -160,6 +168,11 @@ class RobotModelTests(unittest.TestCase):
         frames = []
 
         class Viewer:
+            user_scn = mujoco.MjvScene(robot.model, maxgeom=200)
+
+            def set_texts(self, texts):
+                self.texts = texts
+
             def is_running(self):
                 return len(frames) < 5
 

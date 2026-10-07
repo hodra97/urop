@@ -1,13 +1,13 @@
 """Run FK using the selected profile's robot-specific joint inputs.
 
-robot_config.py selects the model; fk_algorithm.py computes the endpoint pose
+robot_config.py selects the model; FK_algorithm.py computes the endpoint pose
 independently from the captured home geometry.
 """
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-import fk_algorithm
+import FK_algorithm
 import joint_inputs
 from robot_config import robot
 
@@ -18,12 +18,12 @@ ORIENTATION_TOLERANCE: float = 1e-6  # radians
 
 def fk_mujoco(q: ArrayLike) -> NDArray[np.float64]:
     """Get the reference hand pose from MuJoCo at the requested angles."""
-    return robot.transform_at(fk_algorithm.validate_joint_angles(q, robot.joint_count))
+    return robot.transform_at(FK_algorithm.validate_joint_angles(q, robot.joint_count))
 
 
 def fk_manual(q: ArrayLike) -> NDArray[np.float64]:
     """Calculate the selected end-effector pose from home geometry."""
-    return fk_algorithm.fk_manual(
+    return FK_algorithm.fk_manual(
         q,
         robot.home_q,
         robot.home_axes,
@@ -35,14 +35,14 @@ def fk_manual(q: ArrayLike) -> NDArray[np.float64]:
 
 def compare_fk(q: ArrayLike, label: str) -> tuple[float, float]:
     """Compare both hand poses; report distance in metres and angle in radians."""
-    q = fk_algorithm.validate_joint_angles(q, robot.joint_count)
+    q = FK_algorithm.validate_joint_angles(q, robot.joint_count)
     expected = fk_mujoco(q)
     calculated = fk_manual(q)
 
     position_error = float(
         np.linalg.norm(expected[:3, 3] - calculated[:3, 3])
     )
-    orientation_error = fk_algorithm.rotation_error_angle(
+    orientation_error = FK_algorithm.rotation_error_angle(
         expected[:3, :3], calculated[:3, :3]
     )
 

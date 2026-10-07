@@ -12,7 +12,7 @@ from collections.abc import Mapping
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from fk_algorithm import validate_joint_angles
+from FK_algorithm import validate_joint_angles
 from robot_model import RobotModel
 
 

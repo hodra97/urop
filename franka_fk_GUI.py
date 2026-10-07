@@ -15,9 +15,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 import franka_fk as fk
-import fk_algorithm
+import FK_algorithm
 import joint_inputs
 from robot_config import robot
+from viewer_overlays import desired_pose_text, draw_target_axes, draw_world_grid
 
 
 def visualize_fk_motion(
@@ -29,10 +30,14 @@ def visualize_fk_motion(
     that long. The interpolation is in joint space, so the hand can trace a
     curved path even though each joint moves smoothly between two angles.
     """
-    start = fk_algorithm.validate_joint_angles(q_start, robot.joint_count)
-    goal = fk_algorithm.validate_joint_angles(q_goal, robot.joint_count)
+    start = FK_algorithm.validate_joint_angles(q_start, robot.joint_count)
+    goal = FK_algorithm.validate_joint_angles(q_goal, robot.joint_count)
     if not np.isfinite(travel_time) or travel_time <= 0.0:
         raise ValueError("travel_time must be a positive finite number")
+    target_pose = FK_algorithm.fk_manual(
+        goal, robot.home_q, robot.home_axes, robot.home_anchors,
+        robot.home_transform, robot.joint_types,
+    )
 
     # fk.main() ends at its last test pose. Reset before opening the viewer
     # so the first displayed frame begins at the requested start pose.
@@ -53,6 +58,11 @@ def visualize_fk_motion(
     display_period = 1.0 / 60.0  # aim for 60 displayed frames per second
 
     with mujoco.viewer.launch_passive(robot.model, robot.data) as viewer:
+        with viewer.lock():
+            viewer.user_scn.ngeom = 0
+            draw_target_axes(viewer.user_scn, target_pose)
+            draw_world_grid(viewer.user_scn)
+        viewer.set_texts(desired_pose_text(target_pose))
         animation_start = time.perf_counter()
 
         while viewer.is_running():
