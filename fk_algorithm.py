@@ -1,17 +1,44 @@
-"""MuJoCo-independent product-of-exponentials FK for a seven-joint arm."""
+"""MuJoCo-independent PoE FK for a serial arm with n scalar joints.
+
+Revolute coordinates are radians; prismatic coordinates are metres.
+"""
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
-def validate_joint_angles(q: ArrayLike) -> NDArray[np.float64]:
-    """Require seven finite arm angles; the two finger joints are excluded."""
+def validate_joint_angles(q: ArrayLike, joint_count: int | None = None) -> NDArray[np.float64]:
+    """Validate a nonempty joint-coordinate vector, optionally against its model."""
     q = np.asarray(q, dtype=float)
-    if q.shape != (7,):
-        raise ValueError(f"Expected q shape (7,), got {q.shape}")
+    if q.ndim != 1 or q.size == 0:
+        raise ValueError(f"Expected a nonempty 1-D joint vector, got {q.shape}")
+    if joint_count is not None and q.shape != (joint_count,):
+        raise ValueError(f"Expected q shape ({joint_count},), got {q.shape}")
     if not np.all(np.isfinite(q)):
-        raise ValueError("Joint angles must be finite numbers.")
+        raise ValueError("Joint coordinates must be finite numbers.")
     return q
+
+
+def validate_joint_types(joint_types, joint_count: int) -> tuple[str, ...]:
+    """Default to revolute joints for callers supplying rotation-only geometry."""
+    types = ("revolute",) * joint_count if joint_types is None else tuple(joint_types)
+    if len(types) != joint_count or any(t not in ("revolute", "prismatic") for t in types):
+        raise ValueError("Provide one 'revolute' or 'prismatic' type per joint")
+    return types
+
+
+def validate_geometry(home_axes: ArrayLike, home_anchors: ArrayLike, joint_count: int):
+    """Return unit axes and anchors for the selected serial chain."""
+    axes = np.asarray(home_axes, dtype=float)
+    anchors = np.asarray(home_anchors, dtype=float)
+    if axes.shape != (joint_count, 3) or anchors.shape != (joint_count, 3):
+        raise ValueError(f"Axes and anchors must each have shape ({joint_count}, 3)")
+    if not np.all(np.isfinite(axes)) or not np.all(np.isfinite(anchors)):
+        raise ValueError("Axes and anchors must contain finite numbers")
+    lengths = np.linalg.norm(axes, axis=1)
+    if np.any(lengths < 1e-12):
+        raise ValueError("Joint axis has near-zero length")
+    return axes / lengths[:, None], anchors
 
 
 def skew(vector: ArrayLike) -> NDArray[np.float64]:
@@ -59,33 +86,46 @@ def revolute_joint_transform(
     return transform
 
 
+def joint_transform(axis: ArrayLike, anchor: ArrayLike, displacement: float,
+                    joint_type: str = "revolute") -> NDArray[np.float64]:
+    """Evaluate exp([S] displacement) for a revolute or prismatic joint."""
+    if joint_type == "revolute":
+        return revolute_joint_transform(axis, anchor, displacement)
+    if joint_type != "prismatic":
+        raise ValueError(f"Unsupported joint type: {joint_type}")
+    axes, _ = validate_geometry(np.asarray(axis)[None, :], np.asarray(anchor)[None, :], 1)
+    transform = np.eye(4)
+    transform[:3, 3] = axes[0] * displacement
+    return transform
+
+
 def fk_manual(
     q: ArrayLike,
     home_q: ArrayLike,
     home_axes: ArrayLike,
     home_anchors: ArrayLike,
     home_hand_transform: ArrayLike,
+    joint_types=None,
 ) -> NDArray[np.float64]:
     """Compute the hand pose from home geometry, without calling MuJoCo.
 
     All axes and anchors are expressed in the world frame at the home pose.
-    T(q) = T_joint1 ... T_joint7 @ home_hand_transform.
+    T(q) = T_joint1 ... T_jointN @ home_hand_transform.
     """
-    q = validate_joint_angles(q)
     home_q = validate_joint_angles(home_q)
-    home_axes = np.asarray(home_axes, dtype=float)
-    home_anchors = np.asarray(home_anchors, dtype=float)
+    joint_count = home_q.size
+    q = validate_joint_angles(q, joint_count)
+    home_axes, home_anchors = validate_geometry(home_axes, home_anchors, joint_count)
+    joint_types = validate_joint_types(joint_types, joint_count)
     home_hand_transform = np.asarray(home_hand_transform, dtype=float)
-    if home_axes.shape != (7, 3) or home_anchors.shape != (7, 3):
-        raise ValueError("Home axes and anchors must each have shape (7, 3)")
-    if home_hand_transform.shape != (4, 4):
-        raise ValueError("Home hand transform must have shape (4, 4)")
+    if home_hand_transform.shape != (4, 4) or not np.all(np.isfinite(home_hand_transform)):
+        raise ValueError("Home end-effector transform must be finite with shape (4, 4)")
 
     cumulative_motion = np.eye(4)
-    for index in range(7):
+    for index in range(joint_count):
         delta_angle = q[index] - home_q[index]
-        joint_motion = revolute_joint_transform(
-            home_axes[index], home_anchors[index], delta_angle
+        joint_motion = joint_transform(
+            home_axes[index], home_anchors[index], delta_angle, joint_types[index]
         )
         cumulative_motion = cumulative_motion @ joint_motion
 

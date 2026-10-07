@@ -1,7 +1,7 @@
-"""Run Panda forward kinematics for the angles in joint_inputs.py.
+"""Run FK using the selected profile's robot-specific joint inputs.
 
-The Panda model supplies home geometry and a MuJoCo reference pose.
-fk_algorithm.py computes the hand pose independently from that geometry.
+robot_config.py selects the model; fk_algorithm.py computes the endpoint pose
+independently from the captured home geometry.
 """
 
 import numpy as np
@@ -9,7 +9,7 @@ from numpy.typing import ArrayLike, NDArray
 
 import fk_algorithm
 import joint_inputs
-import panda_model
+from robot_config import robot
 
 
 POSITION_TOLERANCE: float = 1e-6  # metres
@@ -18,23 +18,24 @@ ORIENTATION_TOLERANCE: float = 1e-6  # radians
 
 def fk_mujoco(q: ArrayLike) -> NDArray[np.float64]:
     """Get the reference hand pose from MuJoCo at the requested angles."""
-    return panda_model.hand_transform_at(fk_algorithm.validate_joint_angles(q))
+    return robot.transform_at(fk_algorithm.validate_joint_angles(q, robot.joint_count))
 
 
 def fk_manual(q: ArrayLike) -> NDArray[np.float64]:
-    """Calculate the hand pose from the Panda model's home geometry."""
+    """Calculate the selected end-effector pose from home geometry."""
     return fk_algorithm.fk_manual(
         q,
-        panda_model.HOME_Q,
-        panda_model.HOME_AXES,
-        panda_model.HOME_ANCHORS,
-        panda_model.HOME_HAND_TRANSFORM,
+        robot.home_q,
+        robot.home_axes,
+        robot.home_anchors,
+        robot.home_transform,
+        robot.joint_types,
     )
 
 
 def compare_fk(q: ArrayLike, label: str) -> tuple[float, float]:
     """Compare both hand poses; report distance in metres and angle in radians."""
-    q = fk_algorithm.validate_joint_angles(q)
+    q = fk_algorithm.validate_joint_angles(q, robot.joint_count)
     expected = fk_mujoco(q)
     calculated = fk_manual(q)
 
@@ -58,19 +59,17 @@ def compare_fk(q: ArrayLike, label: str) -> tuple[float, float]:
 def main() -> None:
     np.set_printoptions(precision=5, suppress=True)
 
-    print(f"Model: {panda_model.XML_PATH}")
-    print("qpos indices:", panda_model.qpos_indices)
-    print("DoF indices: ", panda_model.dof_indices)
-    print("Home joint angles:", panda_model.HOME_Q)
-    print("\nHome hand transformation:")
-    print(panda_model.HOME_HAND_TRANSFORM)
+    print(f"Model: {robot.xml_path}")
+    print(f"Arm joints ({robot.joint_count}): {robot.joint_names}")
+    print("qpos indices:", robot.qpos_indices)
+    print("DoF indices: ", robot.dof_indices)
+    print("Home joint coordinates:", robot.home_q)
+    print("\nHome end-effector transformation:")
+    print(robot.home_transform)
 
-    joint_min, joint_max = panda_model.joint_limits()
     test_results = [
         compare_fk(q, label)
-        for label, q in joint_inputs.test_configurations(
-            panda_model.HOME_Q, joint_min, joint_max
-        )
+        for label, q in joint_inputs.test_configurations(robot)
     ]
 
     worst_position_error = max(result[0] for result in test_results)
@@ -89,7 +88,6 @@ def main() -> None:
     else:
         print("FAIL: Manual FK does not agree with MuJoCo.")
         raise SystemExit(1)
-
 
 if __name__ == "__main__":
     main()
