@@ -160,11 +160,11 @@ straight Cartesian path or collision-aware motion plan.
 
 ## Kinematics algorithms
 
-All three algorithms use home geometry captured by `robot_model.py`:
-joint coordinates $q_{\mathrm{home}}$, world-frame unit axes $a_i$, points $r_i$
-on those axes, and the endpoint pose $M=T(q_{\mathrm{home}})$. MuJoCo supplies
-this reference geometry and verification results; the FK/Jacobian/IK calculations
-themselves use NumPy. Twists are ordered $[\omega;v]$.
+All three algorithms use home geometry from `robot_model.py`:
+$q_{\mathrm{home}}$, world-frame unit axes $a_i$, points $r_i$ on those axes,
+and endpoint pose $M=T(q_{\mathrm{home}})$. MuJoCo supplies reference geometry
+and verification; the calculations use NumPy. Twists are ordered $[\omega;v]$.
+The IK settings below use the solver defaults.
 
 ### FK: product of exponentials (`FK_algorithm.py`)
 
@@ -179,14 +179,13 @@ S_i=
 \end{cases}
 $$
 
-For a revolute joint, `joint_transform()` uses Rodrigues' formula for
-$R_i$ and translation $(I-R_i)r_i$; for a slide, it uses translation $a_i\theta_i$.
-Multiplying these transforms in chain order gives the endpoint's world pose.
-Home need not be the all-zero joint configuration.
+`joint_transform()` uses Rodrigues' rotation $R_i$ and translation
+$(I-R_i)r_i$ for hinges, or translation $a_i\theta_i$ for slides.
+Transforms multiply in chain order; home need not be all-zero.
 
 ### Jacobians: screw axes and Adjoint (`jacobian_algorithm.py`)
 
-`space_screw_axes()` builds the screws above. `jacobian_space()` computes
+The space Jacobian transforms each home screw by the preceding joints:
 
 $$
 J_{s,i}=\operatorname{Ad}_{P_{i-1}}S_i,\quad
@@ -196,32 +195,26 @@ P_{i-1}=\prod_{j=1}^{i-1}e^{[S_j]\theta_j},\quad P_0=I,
 \begin{bmatrix}R&0\\{[p]_\times R}&R\end{bmatrix}.
 $$
 
-Each column is evaluated **before** multiplying in that joint's transform.
-`jacobian_body()` then uses $J_b=\operatorname{Ad}_{T(q)^{-1}}J_s$.
-Both matrices are $6\times n$: $[\!V_s\!]=\dot T T^{-1}$ and
-$[\!V_b\!]=T^{-1}\dot T$, with $V_s=J_s\dot q$ and $V_b=J_b\dot q$.
-
-The space twist's lower half is $v_s=\dot p-\omega_s\times p$, not $\dot p$;
-the body twist's lower half is $R^\top\dot p$.
-`franka_jacobian.py` converts MuJoCo's endpoint Jacobian to these conventions
-before comparison. Finite differences in the tests validate the analytical
-Jacobian; they are not how the algorithm computes it.
+The body Jacobian is $J_b=\operatorname{Ad}_{T(q)^{-1}}J_s$.
+Both are $6\times n$, with $V_s=J_s\dot q$ and $V_b=J_b\dot q$.
+Their linear components are $v_s=\dot p-\omega_s\times p$ and
+$v_b=R^\top\dot p$. `franka_jacobian.py` converts MuJoCo's endpoint
+Jacobian to these conventions; tests independently check them by finite differences.
 
 ### IK: weighted DLS with constrained search (`IK_algorithm.py`)
 
-1. Validate the target, initial joints and limits. Reject positions outside a
-   conservative reach sphere; being inside it does not establish reachability.
-2. Evaluate PoE FK and the body-frame logarithmic displacement:
+1. Validate inputs and joint limits; reject positions beyond a conservative
+   reach bound plus position tolerance. Passing this check does not establish reachability.
+2. Evaluate PoE FK, the body-frame logarithmic error, and weights:
 
 $$
 e_b=\operatorname{Log}\!\left(T(q)^{-1}T_d\right)^\vee,\qquad
 W=\operatorname{diag}(c,c,c,1,1,1),\quad c=0.3\ \mathrm{m/rad}.
 $$
 
-3. Form $J_b$, weight it, and use the sign of $g=(WJ_b)^\top We_b$ to
-   freeze joints at a limit when $g$ points outward (also freeze fixed joints).
-   For the remaining columns $F$,
-   let $A=(WJ_b)_{[:,F]}$ and solve
+3. Freeze fixed joints and joints at a limit where
+   $g=(WJ_b)^\top We_b$ points outward. For free columns $F$,
+   set $A=(WJ_b)_{[:,F]}$ and solve
 
 $$
 \Delta q_F=A^\top(AA^\top+\lambda^2I_6)^{-1}We_b,\qquad
@@ -230,19 +223,20 @@ q_{\mathrm{trial}}=\operatorname{clip}(q+\alpha\Delta q,q_{\min},q_{\max}).
 $$
 
 4. Scale the whole step to at most 0.3 rad per hinge / 0.03 m per slide.
-   Try $\alpha=1,1/2,\ldots,1/32$, accepting only a decrease in $\|We_b\|$.
-   If needed, retry with damping $\lambda_0,10\lambda_0,100\lambda_0$
-   ($\lambda_0=10^{-3}$). If no step works or the iteration budget is exhausted,
-   restart from another seed: by default four local and four wider guesses,
-   reproducible with RNG seed 7.
-5. Stop only when **both** $\|p_d-p\|\le10^{-4}$ m and
-   $\|e_{b,\omega}\|\le10^{-3}$ rad. The log's linear part is generally not
-   $p_d-p$, so position tolerance is checked separately. On failure, return
+   Backtrack $\alpha=1,1/2,\ldots,1/32$, requiring a decrease greater than
+   $10^{-12}$ in $\|We_b\|$. Retry with
+   $\lambda_0,10\lambda_0,100\lambda_0$ as needed
+   ($\lambda_0=10^{-3}$). On a stalled step or exhausted budget,
+   restart with four local and four wider guesses by default (RNG seed 7).
+5. Require both $\|p_d-p\|\le10^{-4}$ m and
+   $\|e_{b,\omega}\|\le10^{-3}$ rad. Check position separately because the
+   log's linear part generally differs from $p_d-p$. On `NO_CONVERGENCE`, return
    the best weighted-residual candidate with `success=False`.
 
-This solves a single target pose. The GUI independently checks a successful
-solution with MuJoCo, then animates $q(t)=q_0+(3u^2-2u^3)(q_f-q_0)$,
-$u=\operatorname{clip}(t/T,0,1)$; it does not run CLIK or enforce a Cartesian path.
+The GUI verifies successful solutions with MuJoCo, then interpolates
+$q(t)=q_0+(3u^2-2u^3)(q_f-q_0)$, $u=\operatorname{clip}(t/T,0,1)$.
+This is a single-pose solve followed by joint-space animation, not CLIK or
+Cartesian path control.
 
 ## Tests
 
