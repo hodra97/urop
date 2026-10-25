@@ -1,4 +1,4 @@
-"""Solve a world-frame pose target, print joint coordinates, and visualize it.
+"""Solve and visualize a world-frame pose target for the selected robot.
 
 ROBOT_MODULE selects the robot. Edit end_effector_inputs.py for the common
 target; --no-viewer performs the same calculation without a graphical desktop.
@@ -17,11 +17,12 @@ import numpy as np
 import end_effector_inputs
 from FK_algorithm import validate_joint_angles
 from IK_algorithm import IKResult, pose_error, solve_ik
-from robot_config import robot
+import robot_config
+from robot_model import RobotModel
 from viewer_overlays import desired_pose_text, draw_target_axes, draw_world_grid
 
 
-def solve_target(target, initial, *, max_iterations=250, restarts=8) -> IKResult:
+def solve_target(robot: RobotModel, target, initial, *, max_iterations=250, restarts=8) -> IKResult:
     lower, upper = robot.joint_limits()
     result = solve_ik(
         target, initial, robot.home_q, robot.home_axes, robot.home_anchors,
@@ -38,7 +39,7 @@ def solve_target(target, initial, *, max_iterations=250, restarts=8) -> IKResult
     return result
 
 
-def print_result(result: IKResult) -> None:
+def print_result(robot: RobotModel, result: IKResult) -> None:
     print(f"\n{result.status}: {result.message}")
     print(f"Position error: {result.position_error:.6e} m")
     print(f"Orientation error: {result.orientation_error:.6e} rad")
@@ -55,7 +56,7 @@ def draw_target(scene, target) -> None:
     draw_target_axes(scene, target)
 
 
-def visualize_solution(target, initial, result: IKResult, travel_time: float = 3.0,
+def visualize_solution(robot: RobotModel, target, initial, result: IKResult, travel_time: float = 3.0,
                        *, target_rpy_deg=None) -> None:
     if not np.isfinite(travel_time) or travel_time <= 0:
         raise ValueError("Animation duration must be positive and finite")
@@ -109,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not np.isfinite(args.duration) or args.duration <= 0:
             raise ValueError("Animation duration must be positive and finite")
+        robot = robot_config.load_robot()
         target = end_effector_inputs.target_transform(args.position, args.rpy_deg)
         initial = (robot.home_q.copy() if end_effector_inputs.INITIAL_JOINTS is None
                    else validate_joint_angles(end_effector_inputs.INITIAL_JOINTS, robot.joint_count).copy())
@@ -117,15 +119,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Inputs: {end_effector_inputs.__file__}")
         print("Target pose in world coordinates:\n", np.array2string(target, precision=5, suppress_small=True))
         print("Solving IK...", flush=True)
-        result = solve_target(target, initial, max_iterations=args.max_iterations, restarts=args.restarts)
+        result = solve_target(robot, target, initial, max_iterations=args.max_iterations, restarts=args.restarts)
     except ValueError as exc:
         print(f"INVALID_INPUT: {exc}")
         return 2
-    print_result(result)
+    print_result(robot, result)
     if not args.no_viewer:
         print("Target axes: red x, green y, blue z. Close the viewer to exit.")
         target_rpy = end_effector_inputs.TARGET_RPY_DEG if args.rpy_deg is None else args.rpy_deg
-        visualize_solution(target, initial, result, args.duration, target_rpy_deg=target_rpy)
+        visualize_solution(robot, target, initial, result, args.duration, target_rpy_deg=target_rpy)
     return 0 if result.success else 1
 
 

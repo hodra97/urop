@@ -1,13 +1,15 @@
 """Joint-coordinate inputs sized by the selected robot's serial chain.
 
-Edit panda_joint_inputs.py or ur5e_joint_inputs.py for the selected robot.
-Each profile loads its own offsets; this module only applies and validates
-them and generates test configurations. Callers can also pass explicit offsets
-to selected_joint_angles(). Coordinates are radians for revolute joints and
-metres for prismatic joints; offsets are relative to home.
+Edit the input module named by the selected profile's FK_INPUT_MODULE.
+load_offsets(profile) reads the profile's FK_INPUT_MODULE only when requested.
+Callers pass these task inputs separately from RobotModel. Coordinates are
+radians for revolute joints and metres for prismatic joints; offsets are
+relative to home. Omitting offsets in the numeric helpers selects home.
 """
 
 from collections.abc import Mapping
+import importlib
+from types import ModuleType
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -20,12 +22,24 @@ RANDOM_TEST_COUNT = 10
 RANDOM_SEED = 7
 
 
+def load_offsets(profile: ModuleType) -> dict[str, float]:
+    """Read a copy of the selected profile's named FK offsets, only for FK tasks.
+
+    Joint names, values, and limits are checked against the model by
+    selected_joint_angles(), rather than during model construction.
+    """
+    inputs = importlib.import_module(profile.FK_INPUT_MODULE)
+    if not isinstance(inputs.JOINT_OFFSETS, Mapping):
+        raise ValueError("JOINT_OFFSETS must map joint names to offsets")
+    return dict(inputs.JOINT_OFFSETS)
+
+
 def selected_joint_angles(
     robot: RobotModel,
     offsets: ArrayLike | Mapping[str, float] | None = None,
 ) -> NDArray[np.float64]:
     if offsets is None:
-        offsets = robot.default_offsets
+        offsets = {}
     if isinstance(offsets, Mapping):
         unknown = offsets.keys() - set(robot.joint_names)
         if unknown:
@@ -41,10 +55,13 @@ def selected_joint_angles(
     return chosen_q
 
 
-def test_configurations(robot: RobotModel) -> list[tuple[str, NDArray[np.float64]]]:
+def test_configurations(
+    robot: RobotModel,
+    offsets: ArrayLike | Mapping[str, float] | None = None,
+) -> list[tuple[str, NDArray[np.float64]]]:
     cases = [
         ("Test 1: home configuration", robot.home_q.copy()),
-        ("Test 2: chosen joint inputs", selected_joint_angles(robot)),
+        ("Test 2: chosen joint inputs", selected_joint_angles(robot, offsets)),
     ]
     lower, upper = robot.joint_limits()
     # Finite sampling windows for unlimited joints, not physical limits.

@@ -3,15 +3,15 @@
 Position: metres. Orientation: roll, pitch, yaw in degrees.
 R = Rz(yaw) @ Ry(pitch) @ Rx(roll), mapping endpoint coordinates into world.
 These are absolute pose coordinates, not offsets from the home pose.
-Save changes and restart franka_ik_GUI.py to apply them.
+Save changes and restart ik_GUI.py to apply them.
 """
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
-TARGET_POSITION = [0.5, 0.56, 0.45]  # x, y, z (m)
-TARGET_RPY_DEG = [130.0, 45.0, 70.0]   # roll, pitch, yaw (degrees)
+TARGET_POSITION = [0.5, 0.4, 0.44]  # x, y, z (m)
+TARGET_RPY_DEG = [145.0, 45.0, 70.0]   # roll, pitch, yaw (degrees)
 
 # None starts from the selected robot's home pose. Otherwise supply exactly
 # n absolute joint coordinates (rad for hinges, m for slides), not offsets.

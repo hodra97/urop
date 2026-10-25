@@ -2,8 +2,9 @@
 
 Python implementations of product-of-exponentials (PoE) forward kinematics,
 space/body Jacobians, and numerical full-pose inverse kinematics, verified against
-MuJoCo. Supports Franka Panda (7 arm joints) and UR5e (6).
-All `franka_*.py` entry points work with either robot.
+MuJoCo. Supports Franka Panda (7 arm joints), UR5e (6), and TidyBot
+(3 planar-base joints + 7 arm joints). The FK/Jacobian/IK entry points work
+with every profile below.
 
 ## Installation
 
@@ -35,7 +36,8 @@ workspace/
 │   └── ...
 └── mujoco_menagerie/              # Separate model repository
     ├── franka_emika_panda/
-    └── universal_robots_ur5e/
+    ├── universal_robots_ur5e/
+    └── stanford_tidybot/
 ```
 
 `MENAGERIE_COMMIT.txt` pins the reference model revision. If models are stored
@@ -46,39 +48,51 @@ elsewhere, update `XML_PATH` in the corresponding robot profile.
 Activate `.venv` and run from this repository's root:
 
 ```bash
-export ROBOT_MODULE=ur5e_model  # Use panda_model for Panda; default when unset
-python franka_fk.py            # Compare FK against MuJoCo
-python franka_jacobian.py      # Print and verify space/body Jacobians
-python franka_fk_GUI.py        # Verify FK, then animate home <-> target
-python franka_ik_GUI.py        # Solve a target pose, print joints, animate and hold
+export ROBOT_MODULE=tidybot_model  # Or panda_model (default), ur5e_model
+python fk.py                     # Compare FK against MuJoCo
+python jacobian.py               # Print and verify space/body Jacobians
+python fk_GUI.py                 # Verify FK, then animate home <-> target
+python ik_GUI.py                 # Solve a target pose, print joints, animate and hold
 ```
 
-For one command only: `ROBOT_MODULE=panda_model python franka_fk_GUI.py`.
+For one command only: `ROBOT_MODULE=panda_model python fk_GUI.py`.
 Use no spaces around `=`. A separate assignment without `export` may not reach
 Python. `unset ROBOT_MODULE` restores the default. Robot selection is independent
 of virtual-environment activation; `GUI` in the filename is uppercase.
 
+Use the entry-point names above. The previous compatibility entry points and
+physics demonstration have been removed; FK and single-pose IK CLI options remain available.
+
 ## FK joint inputs and viewer
 
-Edit `JOINT_OFFSETS` in the selected robot's input file. The profile loads it
-automatically for FK, Jacobian verification, and the GUI.
+Edit `JOINT_OFFSETS` in the selected robot's input file. The profile names it with
+`FK_INPUT_MODULE`; FK, Jacobian verification, and the FK GUI load it when run.
+Model construction and IK do not read these FK inputs.
 
 | ROBOT_MODULE | Input file | End-effector body |
 |---|---|---|
 | `panda_model` | `panda_joint_inputs.py` — 7 offsets | `hand` |
 | `ur5e_model` | `ur5e_joint_inputs.py` — 6 offsets | `wrist_3_link` |
+| `tidybot_model` | `tidybot_joint_inputs.py` — 10 offsets | `bracelet_link` |
 
 **Target joint coordinates = home coordinates + offsets.** Zero preserves home.
 Units are radians for revolute joints and metres for prismatic joints.
 Invalid names, dimensions, nonfinite values, and out-of-limit targets are rejected.
 Save edits and restart the program to reload inputs; no terminal restart is needed.
 
+TidyBot's first three coordinates are `joint_x` and `joint_y` (metres), then
+`joint_th` (yaw in radians). `joint_1` through `joint_7` are the arm's revolute
+joints. Its input file includes example offsets for both base and arm.
+Setting the three base offsets to zero keeps the base at home during FK;
+IK independently uses all ten joints. Gripper finger joints are excluded.
+
 The GUI prints joint start/target/offset values and repeats a two-second trip in
 each direction. It updates `qpos` with `mj_forward()` rather than simulating actuator
 tracking. To animate only one joint's configured offset:
 
 ```bash
-ROBOT_MODULE=ur5e_model python franka_fk_GUI.py --joint elbow_joint
+ROBOT_MODULE=ur5e_model python fk_GUI.py --joint elbow_joint
+ROBOT_MODULE=tidybot_model python fk_GUI.py --joint joint_x
 ```
 
 Other joint coordinates stay at home, although descendant links move with their
@@ -88,17 +102,13 @@ red x, green y, and blue z axes. The top-right panel displays the desired world
 position (m) and roll/pitch/yaw (degrees). In FK, this pose is calculated from the
 selected goal joint coordinates. These overlays do not change the physical model.
 
-`python franka_demo.py` runs a separate `mj_step()` physics demonstration. It does
-not command the arm to the input offsets; a configured gripper opens/closes every
-two simulation seconds.
-
 ## IK pose inputs and viewer
 
-Edit the shared `end_effector_inputs.py` for either robot:
+Edit the shared `end_effector_inputs.py` for any selected robot:
 
 ```python
-TARGET_POSITION = [0.50, 0.56, 0.45]  # world x, y, z in metres
-TARGET_RPY_DEG = [130.0, 45.0, 70.0]  # roll, pitch, yaw in degrees
+TARGET_POSITION = [0.50, 0.40, 0.44]  # world x, y, z in metres
+TARGET_RPY_DEG = [145.0, 45.0, 70.0]  # roll, pitch, yaw in degrees
 INITIAL_JOINTS = None                # home; or n absolute joint coordinates
 ```
 
@@ -109,11 +119,11 @@ The same target can be reachable for one robot and unreachable for another.
 IK does not use the FK joint-offset files. Save input edits and restart the program.
 
 ```bash
-ROBOT_MODULE=ur5e_model python franka_ik_GUI.py
-ROBOT_MODULE=panda_model python franka_ik_GUI.py --no-viewer
-# Optional one-run input overrides and a clearly unreachable example:
-python franka_ik_GUI.py --position 0.45 0.10 0.45 --rpy-deg 180 0 0
-python franka_ik_GUI.py --no-viewer --position 100 0 0
+ROBOT_MODULE=tidybot_model python ik_GUI.py
+ROBOT_MODULE=panda_model python ik_GUI.py --no-viewer
+# Optional one-run input overrides and an out-of-reach UR5e example:
+python ik_GUI.py --position 0.45 0.10 0.45 --rpy-deg 180 0 0
+ROBOT_MODULE=ur5e_model python ik_GUI.py --no-viewer --position 100 0 0
 ```
 
 `IK_algorithm.py` uses the body Jacobian, SE(3) logarithmic error, weighted damped
@@ -135,6 +145,11 @@ impossible orientation or joint-limited pose. `--max-iterations` (default 250 pe
 attempt) and `--restarts` (default 8 additional guesses) control the search budget.
 Exit codes are 0 for success, 1 for solver/verification failure, and 2 for invalid input.
 
+TidyBot's planar base has unlimited joint ranges in this model, so there is no
+finite positional reach bound. A distant target can exhaust the IK search budget
+and return `NO_CONVERGENCE` rather than `IMPOSSIBLE`. IK may move the base as well
+as the arm; there is no base-lock CLI option.
+
 The GUI draws target axes (x red, y green, z blue) and overlays status, live joint
 values, and pose errors. The desired pose panel preserves the RPY values supplied
 by the input file or CLI, including during a failed solve. On success, it interpolates from the initial joints to the
@@ -147,16 +162,53 @@ straight Cartesian path or collision-aware motion plan.
 
 | File | Responsibility |
 |---|---|
-| `robot_config.py` | Select a profile and call its `load_robot()` |
-| `panda_model.py`, `ur5e_model.py` | Configure model paths, endpoint, home, optional gripper, and input module |
-| `robot_model.py` | Discover the arm chain; expose limits, position/velocity indices, and home geometry |
-| `joint_inputs.py` | Apply and validate offsets; generate verification configurations |
+| `robot_config.py` | `load_profile()` selects a profile; `load_robot(profile)` explicitly creates a fresh robot |
+| `panda_model.py`, `ur5e_model.py`, `tidybot_model.py` | Configure XML, endpoint, home, optional gripper, and the FK input module name |
+| `panda_joint_inputs.py`, `ur5e_joint_inputs.py`, `tidybot_joint_inputs.py` | Store named FK offsets relative to home |
+| `robot_model.py` | Discover the arm chain; own MuJoCo model/data, limits, indices, and home geometry |
+| `joint_inputs.py` | Load FK offsets on request, validate them against a robot, and generate verification configurations |
 | `FK_algorithm.py` | MuJoCo-independent n-joint PoE FK returning a 4x4 endpoint transform |
 | `jacobian_algorithm.py` | Screw axes, Adjoint transforms, and 6xn space/body Jacobians |
 | `end_effector_inputs.py` | Shared world position, RPY orientation, and optional initial joints for IK |
 | `IK_algorithm.py` | NumPy-only joint-limited full-pose IK and SE(3) error calculations |
-| `franka_ik_GUI.py` | Solve and verify IK, print final joints, and visualize status/motion |
-| `viewer_overlays.py` | Shared world grid, desired pose axes, and position/orientation text |
+| `fk.py`, `jacobian.py` | `run_checks(robot, offsets)` compares analytical results against MuJoCo |
+| `fk_GUI.py` | Verify FK and animate the supplied robot, including `--joint` selection |
+| `ik_GUI.py` | Solve and verify IK, print final joints, and visualize the supplied robot |
+| `viewer_overlays.py` | Shared world grid and desired pose axes/text |
+
+## Execution flow
+
+Imports define functions and constants without loading XML or opening a viewer.
+Each FK/Jacobian/IK entry point explicitly creates its robot in `main()`:
+
+1. `robot_config.load_profile()` reads `ROBOT_MODULE` at call time, defaulting to
+   `panda_model`. An explicit module name can also be supplied.
+2. `robot_config.load_robot(profile)` calls the profile's factory and returns a
+   new `RobotModel`, with its own MuJoCo model/data and captured home geometry.
+3. FK and Jacobian entry points call `joint_inputs.load_offsets(profile)` and pass
+   the offsets alongside the robot. IK reads `end_effector_inputs.py` separately.
+4. Verification, output, and viewer helpers receive the robot explicitly. The
+   numeric algorithms continue to receive arrays and joint types.
+
+For example, to verify a robot from Python:
+
+```python
+import joint_inputs
+import robot_config
+from fk import run_checks
+
+profile = robot_config.load_profile("ur5e_model")
+robot = robot_config.load_robot(profile)
+offsets = joint_inputs.load_offsets(profile)
+run_checks(robot, offsets)
+```
+
+`selected_joint_angles(robot, offsets)` and `test_configurations(robot, offsets)`
+take task inputs explicitly; omitting `offsets` means zero offsets (home).
+`RobotModel` stores geometry and simulation state, not FK targets. Programmatic
+calls such as `solve_target(robot, target, initial)` and
+`visualize_fk_motion(robot, start, goal)` use the supplied instance, allowing
+multiple robots in one process. The renamed entry points keep the existing CLI options.
 
 ## Kinematics algorithms
 
@@ -198,7 +250,7 @@ $$
 The body Jacobian is $J_b=\operatorname{Ad}_{T(q)^{-1}}J_s$.
 Both are $6\times n$, with $V_s=J_s\dot q$ and $V_b=J_b\dot q$.
 Their linear components are $v_s=\dot p-\omega_s\times p$ and
-$v_b=R^\top\dot p$. `franka_jacobian.py` converts MuJoCo's endpoint
+$v_b=R^\top\dot p$. `jacobian.py` converts MuJoCo's endpoint
 Jacobian to these conventions; tests independently check them by finite differences.
 
 ### IK: weighted DLS with constrained search (`IK_algorithm.py`)
@@ -248,17 +300,49 @@ python -m unittest discover -v
 - `test_robot_model.py`: Panda/UR5e/synthetic-model FK and Jacobians, chain discovery, indices, input isolation, and viewer loops/options.
 - `test_IK_algorithm.py`: pose conventions, zero/pi rotation logs, reachable/unreachable targets, limits, both robots, and IK viewer behavior.
 
-Tests need both model folders and exercise both profiles regardless of
+Tests need the Panda and UR5e model folders and exercise these profiles regardless of
 `ROBOT_MODULE`. Viewer tests use mocks and do not open windows. FK/Jacobian entry
 points compare home, target, and 10 random configurations; sampling settings live
 in `joint_inputs.py`.
 
+The test files are development checks and are not imported by normal execution.
+Keep them to catch regressions; the FK GUI's built-in FK verification is a
+separate check. Adding a profile does not automatically add model-specific test cases.
+
 ## Adding a robot
 
-Create a joint-input module and a profile exposing `load_robot()`. Return
-`RobotModel.from_xml_path(xml_path, end_effector_body, ...)`, providing
-`home_keyframe` and the input module's `JOINT_OFFSETS` as `default_offsets`.
-Select the profile through `ROBOT_MODULE`. Setting `home_keyframe=None` uses model `qpos0`.
+Add the external XML/assets, a profile, and an FK input module. No robot registry
+or changes to common algorithms, entry points, or viewers are needed.
+
+For example, create `my_robot_model.py`:
+
+```python
+from pathlib import Path
+from robot_model import RobotModel
+
+XML_PATH = Path(__file__).resolve().parent.parent / "mujoco_menagerie" / "my_robot" / "scene.xml"
+END_EFFECTOR_BODY_NAME = "tool"  # A body name in the XML
+HOME_KEYFRAME = None            # Uses model qpos0; or an XML keyframe name
+FK_INPUT_MODULE = "my_robot_joint_inputs"  # An import name, not an import statement
+
+def load_robot():
+    return RobotModel.from_xml_path(
+        XML_PATH, END_EFFECTOR_BODY_NAME,
+        home_keyframe=HOME_KEYFRAME,
+        gripper_actuator=None,  # Optional actuator metadata
+    )
+```
+
+Create `my_robot_joint_inputs.py`, using your XML's joint names:
+
+```python
+JOINT_OFFSETS = {"joint_a": 0.0, "joint_b": 0.1}
+```
+
+Missing joints receive zero offsets. The FK input module is imported only for
+FK tasks; keep the profile's `load_robot()` independent of task inputs.
+Select the new robot with `export ROBOT_MODULE=my_robot_model`, then use the
+same commands above. IK uses `end_effector_inputs.py`.
 
 Supported chains have a fixed base and hinge/slide joints. Downstream fingers and
 unrelated scene objects are excluded. Ball/free joints in the arm chain, mocap

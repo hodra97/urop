@@ -4,7 +4,6 @@ Only joints on the world-to-end-effector path are selected. Gripper descendants
 and unrelated scene objects are excluded. Hinge and slide joints are supported.
 """
 
-from collections.abc import Mapping
 from pathlib import Path
 
 import mujoco
@@ -17,7 +16,6 @@ from FK_algorithm import validate_joint_angles
 class RobotModel:
     def __init__(self, model: mujoco.MjModel, end_effector_body: str, *,
                  home_keyframe: str | None = None,
-                 default_offsets: Mapping[str, float] | None = None,
                  gripper_actuator: str | None = None) -> None:
         self.model = model
         self.data = mujoco.MjData(model)
@@ -52,12 +50,6 @@ class RobotModel:
         self.joint_count = len(joint_ids)
         self.qpos_indices = model.jnt_qposadr[self.joint_ids].copy()
         self.dof_indices = model.jnt_dofadr[self.joint_ids].copy()
-        self.default_offsets = dict(default_offsets or {})
-        unknown = self.default_offsets.keys() - set(self.joint_names)
-        if unknown:
-            raise ValueError(f"Offsets refer to joints outside the arm: {sorted(unknown)}")
-        if not all(np.isfinite(value) for value in self.default_offsets.values()):
-            raise ValueError("Default offsets must be finite")
         self.gripper_actuator_id = (
             None if gripper_actuator is None
             else self.object_id(mujoco.mjtObj.mjOBJ_ACTUATOR, gripper_actuator)

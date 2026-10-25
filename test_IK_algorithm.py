@@ -11,7 +11,7 @@ import numpy as np
 from numpy.testing import assert_allclose
 
 import end_effector_inputs as inputs
-import franka_ik_GUI as gui
+import ik_GUI as gui
 import panda_model
 import ur5e_model
 from FK_algorithm import fk_manual, revolute_joint_transform, skew
@@ -20,10 +20,7 @@ from viewer_overlays import desired_pose_text, rotation_to_rpy_deg
 
 
 def solve_robot(robot, target, **kwargs):
-    lower, upper = robot.joint_limits()
-    return solve_ik(target, robot.home_q, robot.home_q, robot.home_axes,
-                    robot.home_anchors, robot.home_transform, robot.joint_types,
-                    lower_limits=lower, upper_limits=upper, **kwargs)
+    return gui.solve_target(robot, target, robot.home_q, **kwargs)
 
 
 class IKMathTests(unittest.TestCase):
@@ -167,7 +164,8 @@ class IKIntegrationTests(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(result.q)))
 
     def test_cli_status_and_invalid_input_without_viewer(self):
-        with patch.object(gui, "robot", self.robots[0]), patch.object(gui, "visualize_solution") as viewer:
+        with (patch.object(gui.robot_config, "load_robot", return_value=self.robots[0]),
+              patch.object(gui, "visualize_solution") as viewer):
             with redirect_stdout(StringIO()) as output:
                 code = gui.main(["--no-viewer", "--position", "100", "0", "0"])
             self.assertEqual(code, 1)
@@ -180,7 +178,11 @@ class IKIntegrationTests(unittest.TestCase):
             viewer.assert_not_called()
 
     def test_viewer_reaches_solution_holds_and_displays_failure(self):
-        robot = self.robots[1]
+        for robot in self.robots:
+            with self.subTest(robot=robot.xml_path):
+                self.check_viewer_solution(robot)
+
+    def check_viewer_solution(self, robot):
         target = inputs.target_transform([0.45, 0.10, 0.45], [180, 0, 0])
         success = solve_robot(robot, target)
         self.assertTrue(success.success)
@@ -205,11 +207,10 @@ class IKIntegrationTests(unittest.TestCase):
 
             viewer = Viewer()
             ticks = iter([0, 0, 0, 1.5, 1.5, 3, 3, 4, 4])
-            with (patch.object(gui, "robot", robot),
-                  patch.object(gui.mujoco.viewer, "launch_passive", return_value=nullcontext(viewer)),
+            with (patch.object(gui.mujoco.viewer, "launch_passive", return_value=nullcontext(viewer)),
                   patch.object(gui.time, "perf_counter", side_effect=lambda: next(ticks)),
                   patch.object(gui.time, "sleep")):
-                gui.visualize_solution(target, robot.home_q, result)
+                gui.visualize_solution(robot, target, robot.home_q, result)
             goal = result.q if result.success else robot.home_q
             expected = robot.home_q + np.array([0, 0.5, 1, 1])[:, None] * (goal - robot.home_q)
             assert_allclose(frames, expected, atol=1e-12)
@@ -217,6 +218,35 @@ class IKIntegrationTests(unittest.TestCase):
             self.assertIn(result.status, overlays[-1][0][3])
             self.assertIn("Desired pose", overlays[-1][1][2])
             self.assertIn("0.4500", overlays[-1][1][3])
+
+    def test_cli_success_and_budget_options_for_both_robots(self):
+        for robot in self.robots:
+            for move in (0.0, 0.05):
+                target = robot.home_transform.copy()
+                target[0, 3] += move
+                # Fixed-point arguments avoid argparse treating a tiny negative
+                # scientific-notation coordinate as an option name.
+                argv = ["--no-viewer", "--position", *[f"{v:.12f}" for v in target[:3, 3]],
+                        "--rpy-deg", *[f"{v:.12f}" for v in rotation_to_rpy_deg(target[:3, :3])],
+                        "--max-iterations", "1", "--restarts", "0", "--duration", "2"]
+                with (self.subTest(robot=robot.xml_path, move=move),
+                      patch.object(gui.robot_config, "load_robot", return_value=robot),
+                      patch.object(gui, "visualize_solution") as viewer,
+                      redirect_stdout(StringIO()) as output):
+                    code = gui.main(argv)
+                    self.assertEqual(code, 0 if move == 0 else 1)
+                    self.assertIn("SUCCESS" if move == 0 else "NO_CONVERGENCE", output.getvalue())
+                    viewer.assert_not_called()
+
+    def test_solver_success_is_rejected_if_mujoco_verification_fails(self):
+        for robot in self.robots:
+            wrong_pose = robot.home_transform.copy()
+            wrong_pose[0, 3] += 0.01
+            with (self.subTest(robot=robot.xml_path),
+                  patch.object(robot, "transform_at", return_value=wrong_pose)):
+                result = gui.solve_target(robot, robot.home_transform, robot.home_q)
+                self.assertFalse(result.success)
+                self.assertEqual(result.status, "VERIFICATION_FAILED")
 
 
 if __name__ == "__main__":

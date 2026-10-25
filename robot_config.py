@@ -1,17 +1,31 @@
-"""Select a robot profile for every task, viewer, and input helper.
+"""Select profiles and explicitly create independent robot instances.
 
-Set ROBOT_MODULE=ur5e_model to switch without editing the algorithms.
-New profiles provide load_robot() returning RobotModel, with offsets loaded
-from their own joint input module (e.g. ur5e_joint_inputs.py).
+ROBOT_MODULE is read when load_profile() is called, with Panda as the default.
+Importing this module does not select a profile, load XML, or read task inputs.
 """
 
 import importlib
 import os
+from types import ModuleType
 
 from robot_model import RobotModel
 
 
-ROBOT_MODULE = os.environ.get("ROBOT_MODULE", "panda_model")
-robot = importlib.import_module(ROBOT_MODULE).load_robot()
-if not isinstance(robot, RobotModel):
-    raise TypeError(f"{ROBOT_MODULE}.load_robot() must return RobotModel")
+DEFAULT_ROBOT_MODULE = "panda_model"
+
+
+def load_profile(module_name: str | None = None) -> ModuleType:
+    """Import the selected profile without constructing a model."""
+    if module_name is None:
+        module_name = os.environ.get("ROBOT_MODULE", DEFAULT_ROBOT_MODULE)
+    return importlib.import_module(module_name)
+
+
+def load_robot(profile: ModuleType | None = None) -> RobotModel:
+    """Create a fresh model/data pair; FK inputs are loaded separately by callers."""
+    if profile is None:
+        profile = load_profile()
+    robot = profile.load_robot()
+    if not isinstance(robot, RobotModel):
+        raise TypeError(f"{profile.__name__}.load_robot() must return RobotModel")
+    return robot

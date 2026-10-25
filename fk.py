@@ -1,4 +1,4 @@
-"""Run FK using the selected profile's robot-specific joint inputs.
+"""Run FK for the selected profile using its robot-specific joint inputs.
 
 robot_config.py selects the model; FK_algorithm.py computes the endpoint pose
 independently from the captured home geometry.
@@ -9,19 +9,20 @@ from numpy.typing import ArrayLike, NDArray
 
 import FK_algorithm
 import joint_inputs
-from robot_config import robot
+import robot_config
+from robot_model import RobotModel
 
 
 POSITION_TOLERANCE: float = 1e-6  # metres
 ORIENTATION_TOLERANCE: float = 1e-6  # radians
 
 
-def fk_mujoco(q: ArrayLike) -> NDArray[np.float64]:
+def fk_mujoco(robot: RobotModel, q: ArrayLike) -> NDArray[np.float64]:
     """Get the reference hand pose from MuJoCo at the requested angles."""
     return robot.transform_at(FK_algorithm.validate_joint_angles(q, robot.joint_count))
 
 
-def fk_manual(q: ArrayLike) -> NDArray[np.float64]:
+def fk_manual(robot: RobotModel, q: ArrayLike) -> NDArray[np.float64]:
     """Calculate the selected end-effector pose from home geometry."""
     return FK_algorithm.fk_manual(
         q,
@@ -33,11 +34,11 @@ def fk_manual(q: ArrayLike) -> NDArray[np.float64]:
     )
 
 
-def compare_fk(q: ArrayLike, label: str) -> tuple[float, float]:
+def compare_fk(robot: RobotModel, q: ArrayLike, label: str) -> tuple[float, float]:
     """Compare both hand poses; report distance in metres and angle in radians."""
     q = FK_algorithm.validate_joint_angles(q, robot.joint_count)
-    expected = fk_mujoco(q)
-    calculated = fk_manual(q)
+    expected = fk_mujoco(robot, q)
+    calculated = fk_manual(robot, q)
 
     position_error = float(
         np.linalg.norm(expected[:3, 3] - calculated[:3, 3])
@@ -56,7 +57,8 @@ def compare_fk(q: ArrayLike, label: str) -> tuple[float, float]:
     return position_error, orientation_error
 
 
-def main() -> None:
+def run_checks(robot: RobotModel, offsets=None) -> None:
+    """Verify home, the supplied FK task, and random configurations for this robot."""
     np.set_printoptions(precision=5, suppress=True)
 
     print(f"Model: {robot.xml_path}")
@@ -68,8 +70,8 @@ def main() -> None:
     print(robot.home_transform)
 
     test_results = [
-        compare_fk(q, label)
-        for label, q in joint_inputs.test_configurations(robot)
+        compare_fk(robot, q, label)
+        for label, q in joint_inputs.test_configurations(robot, offsets)
     ]
 
     worst_position_error = max(result[0] for result in test_results)
@@ -88,6 +90,13 @@ def main() -> None:
     else:
         print("FAIL: Manual FK does not agree with MuJoCo.")
         raise SystemExit(1)
+
+
+def main() -> None:
+    profile = robot_config.load_profile()
+    robot = robot_config.load_robot(profile)
+    run_checks(robot, joint_inputs.load_offsets(profile))
+
 
 if __name__ == "__main__":
     main()

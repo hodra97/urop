@@ -1,7 +1,7 @@
 """Animate the joint configuration from the selected robot's input file.
 
-This file runs the FK checks, then reads the selected model from robot_config.py
-and applies its profile's offsets through joint_inputs.py. The viewer assigns joint
+main() explicitly loads a model and its FK inputs, runs FK checks, then passes
+the model and joint coordinates to the viewer. The viewer assigns joint
 positions directly: it shows how the geometry moves, without simulating the
 actuators following commands or solving IK along a Cartesian path.
 """
@@ -14,15 +14,16 @@ import mujoco.viewer
 import numpy as np
 from numpy.typing import ArrayLike
 
-import franka_fk as fk
+import fk
 import FK_algorithm
 import joint_inputs
-from robot_config import robot
+import robot_config
+from robot_model import RobotModel
 from viewer_overlays import desired_pose_text, draw_target_axes, draw_world_grid
 
 
 def visualize_fk_motion(
-    q_start: ArrayLike, q_goal: ArrayLike, travel_time: float = 2.0
+    robot: RobotModel, q_start: ArrayLike, q_goal: ArrayLike, travel_time: float = 2.0
 ) -> None:
     """Animate q_start -> q_goal -> q_start, repeating until the viewer closes.
 
@@ -39,7 +40,7 @@ def visualize_fk_motion(
         robot.home_transform, robot.joint_types,
     )
 
-    # fk.main() ends at its last test pose. Reset before opening the viewer
+    # FK verification ends at its last test pose. Reset before opening the viewer
     # so the first displayed frame begins at the requested start pose.
     robot.data.qpos[robot.qpos_indices] = start
     robot.data.qvel[:] = 0.0
@@ -98,23 +99,26 @@ def visualize_fk_motion(
 
 def main(argv: list[str] | None = None) -> None:
     """Validate FK, then animate the selected input configuration."""
+    profile = robot_config.load_profile()
+    robot = robot_config.load_robot(profile)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--joint", choices=robot.joint_names,
         help="Animate only this joint's configured offset; keep other joints at home.",
     )
     args = parser.parse_args(argv)
-    fk.main()  # Raises SystemExit if manual FK disagrees with MuJoCo.
+    offsets = joint_inputs.load_offsets(profile)
+    fk.run_checks(robot, offsets)  # Raises SystemExit if FK disagrees with MuJoCo.
 
     # Read the same editable angles used by the non-visualized FK checks.
-    goal_q = joint_inputs.selected_joint_angles(robot)
+    goal_q = joint_inputs.selected_joint_angles(robot, offsets)
     if args.joint is not None:
         index = robot.joint_names.index(args.joint)
         isolated_goal = robot.home_q.copy()
         isolated_goal[index] = goal_q[index]
         goal_q = isolated_goal
         print(f"\nSingle-joint check: {args.joint}; other joint coordinates stay at home.")
-    visualize_fk_motion(robot.home_q, goal_q)
+    visualize_fk_motion(robot, robot.home_q, goal_q)
 
 
 if __name__ == "__main__":
