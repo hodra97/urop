@@ -53,6 +53,7 @@ python fk.py                     # Compare FK against MuJoCo
 python jacobian.py               # Print and verify space/body Jacobians
 python fk_GUI.py                 # Verify FK, then animate home <-> target
 python ik_GUI.py                 # Solve a target pose, print joints, animate and hold
+python trajectory_GUI_v1.py       # Compare pointwise DLS IK and CLIK on a straight / SLERP reference
 ```
 
 For one command only: `ROBOT_MODULE=panda_model python fk_GUI.py`.
@@ -67,7 +68,7 @@ physics demonstration have been removed; FK and single-pose IK CLI options remai
 
 Edit `JOINT_OFFSETS` in the selected robot's input file. The profile names it with
 `FK_INPUT_MODULE`; FK, Jacobian verification, and the FK GUI load it when run.
-Model construction and IK do not read these FK inputs.
+Model construction, IK, and Cartesian trajectory execution do not read these FK inputs.
 
 | ROBOT_MODULE | Input file | End-effector body |
 |---|---|---|
@@ -158,6 +159,125 @@ On solver failure it holds the initial pose and displays the reason. Invalid inp
 are rejected before opening a window. This is joint-space visualization, not a
 straight Cartesian path or collision-aware motion plan.
 
+## V1: DLS IK / CLIK comparison
+
+`trajectory_GUI_v1.py` always computes **both** independent joint trajectories:
+pointwise DLS IK and CLIK, with the same initial joints, desired poses, times,
+joint limits, speed caps, and error tolerances. One method failing does not prevent
+the other from running. Neither consumes the other's joint solution.
+
+The default initial joints and final world pose come from `end_effector_inputs.py`.
+Use `--position` and `--rpy-deg` to override the final pose, as in the single-pose
+IK program. A reachable final pose does not guarantee a feasible straight path.
+For a small example tested on Panda, UR5e, and TidyBot:
+
+```bash
+ROBOT_MODULE=tidybot_model python trajectory_GUI_v1.py \
+  --offset 0.02 0 0 --rotation-offset-deg 0 0 10 --duration 3 --dt 0.02
+
+# Calculate and save without opening a window:
+ROBOT_MODULE=panda_model python trajectory_GUI_v1.py --no-viewer \
+  --offset 0.02 0 0 --rotation-offset-deg 0 0 10 --duration 3 --dt 0.02
+```
+
+`--offset` adds a world-frame translation to the initial endpoint position.
+`--rotation-offset-deg` postmultiplies the initial rotation by `Rz Ry Rx`, so its
+angles describe a **local-frame** increment. These override position and orientation
+independently: omitting either override uses that component from the shared input
+file. They are mutually exclusive with the respective absolute CLI options.
+
+The reference generator in `straight_line_trajectory.py` uses
+
+$$
+u=\operatorname{clip}(t/T,0,1),\quad s=3u^2-2u^3,\qquad
+p_d=p_0+s(p_f-p_0),\qquad
+R_d=R_0\exp(s[\phi]_\times),\quad \phi=\operatorname{Log}(R_0^\top R_f)^\vee.
+$$
+
+The rotation expression is equivalent to shortest-arc quaternion SLERP. At a
+180-degree difference, either direction is shortest; the rotation-log convention
+selects one. RPY angles themselves are not interpolated. The shared time scaling
+gives zero translational and angular velocities at both ends. The desired-body
+twist is $V_d=[\dot s\phi; R_d^\top\dot p_d]$, with
+$\dot s=6u(1-u)/T$ and $\dot p_d=\dot s(p_f-p_0)$.
+V1 samples this reference at motion time $t$.
+
+`trajectory_solver_v1.py` receives numerical geometry, without loading a robot:
+
+- **DLS IK:** call the existing `solve_ik()` at each reference sample, starting
+  from the previous accepted joints. Restarts are disabled to avoid random branch
+  jumps. Stop at the last accepted sample if IK fails or if an interval would
+  exceed a joint speed cap (`SPEED_LIMIT`); never substitute a false solution.
+- **CLIK:** with $E=T(q)^{-1}T_d$, form
+  $V_c=\operatorname{Ad}_E V_d+K\operatorname{Log}(E)^\vee$. Apply a weighted,
+  damped body-Jacobian inverse to obtain joint velocity, scale to speed caps,
+  project into joint limits, and integrate $q_{k+1}=q_k+\Delta t\dot q_k$.
+  This is one feedback update per time interval. CLIK also uses DLS for the
+  velocity inverse; its procedure differs from converging static IK per waypoint.
+  The frame transport follows the [Modern Robotics task-space velocity controller](https://modernrobotics.northwestern.edu/nu-gm-book-resource/11-3-motion-control-with-velocity-inputs-part-3-of-3/), using proportional feedback without an integral term.
+
+For the pointwise method, $q_k=\operatorname{IK}(T_d(t_k);q_{k-1})$ uses the
+weighted DLS iteration described under **IK** below, with `restarts=0`.
+The candidate is accepted only if every
+$|q_{k,i}-q_{k-1,i}|/(t_k-t_{k-1})\le c_i$ (up to numerical slack).
+It does not retime the reference when this check fails.
+
+For CLIK, let $F$ contain free joints after freezing fixed joints and joints at
+a limit whose weighted gradient points outward. With
+$W=\operatorname{diag}(0.3,0.3,0.3,1,1,1)$ and $A=(WJ_b)_{[:,F]}$,
+
+$$
+\dot q_F=A^\top(AA^\top+\lambda^2I_6)^{-1}WV_c,\qquad
+\dot q_{\bar F}=0,\qquad
+\gamma=\max\left(1,\max_i\frac{|\dot q_i|}{c_i}\right),\qquad
+q_{k+1}=\operatorname{clip}\left(q_k+\Delta t\frac{\dot q}{\gamma},q_{\min},q_{\max}\right).
+$$
+
+V1 advances reference time on schedule even when $\gamma>1$, so the robot can
+lag and leave the desired straight path.
+
+Defaults: `--duration 5`, `--dt 0.01`, `--settle-time 1`, `--gain 5`,
+`--damping 0.001`, `--orientation-scale 0.3`, `--max-iterations 250`,
+`--position-tolerance 0.0001`, `--orientation-tolerance 0.001`,
+`--revolute-speed 1` rad/s, `--prismatic-speed 0.1` m/s. The speed caps are
+experiment settings, not actuator specifications. The reference holds the final
+pose during settle time; both methods receive this same interval. The exact
+arrival time is included even when duration is not a multiple of dt.
+
+Every accepted joint sample is checked against MuJoCo. Output goes to a unique
+`runs/trajectory_TIMESTAMP/` directory, or a new path supplied with `--output`:
+
+- `reference.csv`: the complete desired poses and desired-body twists.
+- `dls_ik.csv`, `clik.csv`: time, desired/native poses, pose errors, joints,
+  finite-difference joint velocities/accelerations, solve times, and limit flags.
+- `summary.json`: initial/goal poses, model/endpoint, settings, joint metadata,
+  maximum and sample RMS errors, errors at time T, goal settling time, limits,
+  computation times, and FK/MuJoCo agreement. Unlimited bounds use JSON `null`.
+
+Existing output directories are rejected instead of overwritten. DLS failure
+logs contain only the accepted prefix, with failure time in the summary; missing
+time-T errors are `null`. `SUCCESS` means the **final** pose, including any settle
+time, meets tolerance. `path_within_tolerance` requires a complete recorded
+trajectory and checks every recorded sample. CLIK may finish successfully despite
+larger transient tracking errors.
+Exit codes: 0 if both succeed, 1 if either solver/verification fails, 2 for invalid
+input or an output/model-loading error. `NO_CONVERGENCE` is not proof of impossibility.
+
+The viewer alternates between both recorded joint paths, restarting each at the
+same initial posture. Each method gets `duration + settle_time + 1` seconds:
+the final extra second is a viewer-only hold, so the default cycle is 7 seconds
+per method even though the recorded trajectory ends at 6 seconds.
+It displays the desired line in yellow, DLS IK in cyan,
+CLIK in green, a world grid, moving desired axes, and live errors. Failed paths
+hold their last accepted sample. Playback uses sample-and-hold `qpos` updates and
+`mj_forward()`. It does not claim an exactly straight continuous path between
+samples, actuator tracking, acceleration limits, or collision avoidance.
+
+The straight reference concerns the configured **body origin**. For TidyBot this
+is `bracelet_link`, not an offset gripper tip; rotating the wrist can make that
+offset tip follow a different path. Both trajectory solvers may move TidyBot's
+planar base as well as its arm.
+
 ## Modules and conventions
 
 | File | Responsibility |
@@ -169,24 +289,28 @@ straight Cartesian path or collision-aware motion plan.
 | `joint_inputs.py` | Load FK offsets on request, validate them against a robot, and generate verification configurations |
 | `FK_algorithm.py` | MuJoCo-independent n-joint PoE FK returning a 4x4 endpoint transform |
 | `jacobian_algorithm.py` | Screw axes, Adjoint transforms, and 6xn space/body Jacobians |
-| `end_effector_inputs.py` | Shared world position, RPY orientation, and optional initial joints for IK |
+| `end_effector_inputs.py` | Shared world position, RPY orientation, and optional initial joints for IK and Cartesian trajectories |
 | `IK_algorithm.py` | NumPy-only joint-limited full-pose IK and SE(3) error calculations |
 | `fk.py`, `jacobian.py` | `run_checks(robot, offsets)` compares analytical results against MuJoCo |
 | `fk_GUI.py` | Verify FK and animate the supplied robot, including `--joint` selection |
 | `ik_GUI.py` | Solve and verify IK, print final joints, and visualize the supplied robot |
-| `viewer_overlays.py` | Shared world grid and desired pose axes/text |
+| `straight_line_trajectory.py` | Straight-position / SLERP reference poses and desired-body twists |
+| `trajectory_solver_v1.py` | V1 DLS IK / CLIK comparison |
+| `trajectory_GUI_v1.py` | V1 verification, exports, and alternating playback |
+| `viewer_overlays.py` | Shared world grid, desired pose axes/text, and sampled path drawing |
 
 ## Execution flow
 
 Imports define functions and constants without loading XML or opening a viewer.
-Each FK/Jacobian/IK entry point explicitly creates its robot in `main()`:
+Each FK/Jacobian/IK/trajectory entry point explicitly creates its robot in `main()`:
 
 1. `robot_config.load_profile()` reads `ROBOT_MODULE` at call time, defaulting to
    `panda_model`. An explicit module name can also be supplied.
 2. `robot_config.load_robot(profile)` calls the profile's factory and returns a
    new `RobotModel`, with its own MuJoCo model/data and captured home geometry.
 3. FK and Jacobian entry points call `joint_inputs.load_offsets(profile)` and pass
-   the offsets alongside the robot. IK reads `end_effector_inputs.py` separately.
+   the offsets alongside the robot. IK and trajectories read `end_effector_inputs.py`
+   separately. V1 compares pointwise DLS IK and CLIK.
 4. Verification, output, and viewer helpers receive the robot explicitly. The
    numeric algorithms continue to receive arrays and joint types.
 
@@ -342,7 +466,8 @@ JOINT_OFFSETS = {"joint_a": 0.0, "joint_b": 0.1}
 Missing joints receive zero offsets. The FK input module is imported only for
 FK tasks; keep the profile's `load_robot()` independent of task inputs.
 Select the new robot with `export ROBOT_MODULE=my_robot_model`, then use the
-same commands above. IK uses `end_effector_inputs.py`.
+same commands above. IK and Cartesian trajectories use `end_effector_inputs.py`;
+the new trajectory modules require no robot-specific branches.
 
 Supported chains have a fixed base and hinge/slide joints. Downstream fingers and
 unrelated scene objects are excluded. Ball/free joints in the arm chain, mocap

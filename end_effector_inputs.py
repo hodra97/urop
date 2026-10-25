@@ -3,7 +3,7 @@
 Position: metres. Orientation: roll, pitch, yaw in degrees.
 R = Rz(yaw) @ Ry(pitch) @ Rx(roll), mapping endpoint coordinates into world.
 These are absolute pose coordinates, not offsets from the home pose.
-Save changes and restart ik_GUI.py to apply them.
+Save changes and restart ik_GUI.py or trajectory_GUI_v1.py to apply them.
 """
 
 import numpy as np
