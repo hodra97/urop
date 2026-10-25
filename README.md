@@ -53,7 +53,7 @@ python fk.py                     # Compare FK against MuJoCo
 python jacobian.py               # Print and verify space/body Jacobians
 python fk_GUI.py                 # Verify FK, then animate home <-> target
 python ik_GUI.py                 # Solve a target pose, print joints, animate and hold
-python trajectory_GUI_v1.py       # Compare pointwise DLS IK and CLIK on a straight / SLERP reference
+python trajectory_GUI_v2.py      # CLIK with adaptive reference time; nominal 5 s, total budget 10 s
 ```
 
 For one command only: `ROBOT_MODULE=panda_model python fk_GUI.py`.
@@ -159,7 +159,170 @@ On solver failure it holds the initial pose and displays the reason. Invalid inp
 are rejected before opening a window. This is joint-space visualization, not a
 straight Cartesian path or collision-aware motion plan.
 
-## V1: DLS IK / CLIK comparison
+## V2: CLIK with adaptive reference time
+
+V2 uses one CLIK path. It does not call static `solve_ik()` at each waypoint.
+V1 remains available as `trajectory_solver_v1.py` and `trajectory_GUI_v1.py`;
+its algorithms and CLI options are preserved. The unversioned trajectory solver
+and GUI names have been removed. Single-pose `ik_GUI.py` remains independent.
+
+```bash
+# Defaults: Panda + straight position / SLERP orientation
+python trajectory_GUI_v2.py
+
+# Choose robot and reference independently
+ROBOT_MODULE=ur5e_model TRAJECTORY_MODULE=straight_line_trajectory \
+  python trajectory_GUI_v2.py --no-viewer
+
+# Optional short motion; identical flags work with Panda, UR5e, and TidyBot
+ROBOT_MODULE=tidybot_model python trajectory_GUI_v2.py \
+  --offset 0.02 0 0 --rotation-offset-deg 0 0 10
+```
+
+The initial joints and final pose come from `end_effector_inputs.py` unless
+`--position`, `--rpy-deg`, `--offset`, or `--rotation-offset-deg` overrides a
+component. Relative position is in world coordinates; relative orientation is
+postmultiplied onto the starting rotation. Model loading never reads FK offsets.
+
+The nominal reference takes `--duration 5` seconds. `--max-time 10` is the total
+motion-time budget, including any slow progress or final correction, **not** an
+additional ten seconds after nominal arrival. A successful solve completes the
+reference and meets both final pose tolerances. Exceeding the nominal duration
+alone is not failure. Failure reasons include `TIMEOUT`, `STALLED` (no meaningful
+progress/error reduction for `--stall-time 1` second), `NUMERICAL_FAILURE`, and
+`VERIFICATION_FAILED`. Failure retains the last accepted state. Exit codes are
+0 for success, 1 for solver/verification failure, and 2 for invalid inputs/I/O.
+
+The two clocks are motion/playback time $t$ and nominal reference time $\tau$:
+
+$$
+t_{k+1}=t_k+h,\qquad \tau_{k+1}=\min(T,\tau_k+\alpha_k h),\qquad 0\le\alpha_k\le1.
+$$
+
+The reference returns `sample(tau) -> (T_d, V_d)` where $V_d$ is differentiated
+with respect to $\tau$. Its feedforward speed is scaled by $\alpha$; pose feedback
+remains active even when reference progress pauses. `tau/duration` is a nominal
+time fraction, not necessarily geometric path progress. For the default straight
+reference, $u=\tau/T$ and $s=3u^2-2u^3$ determine position and SLERP progress.
+Virtual clock scaling follows the principle described in
+[ROS 2 Control's speed scaling documentation](https://control.ros.org/rolling/doc/ros2_controllers/joint_trajectory_controller/doc/speed_scaling.html);
+this implementation chooses the rate from its own kinematic constraints/checks.
+
+At each state, v2 separates translational and rotational feedback. With current
+pose $(R,p)$ and nominal desired-body twist $V_d=[\omega_d;v_d]$, it commands
+
+$$
+V_c=\begin{bmatrix}
+\alpha R^\top R_d\omega_d + K\operatorname{Log}(R^\top R_d)^\vee\\
+R^\top\big(\alpha R_d v_d+K(p_d-p)\big)
+\end{bmatrix}.
+$$
+
+A NumPy active-set solver computes the bounded DLS velocity. For step length
+$h$ and per-joint speed caps $c_i$, the optimization and elementwise bounds are
+
+$$
+\dot q^*=\underset{\ell\le v\le u}{\arg\min}
+\left(\|WJ_bv-WV_c\|^2+\lambda^2\|v\|^2\right),\qquad
+\ell_i=\max\left(-c_i,\frac{q_{\min,i}-q_i}{h}\right),\quad
+u_i=\min\left(c_i,\frac{q_{\max,i}-q_i}{h}\right).
+$$
+
+These bounds enforce joint speeds and the next joint coordinates. Bound joints
+are handled by resolving the remaining variables, rather than clipping all
+coordinates after an unconstrained solve. The default $W$ and damping remain
+`--orientation-scale 0.3` and `--damping 0.001`; `--gain` defaults to 5.
+The experimental speed caps are `--revolute-speed 1` rad/s and
+`--prismatic-speed 0.1` m/s; these are not manufacturer actuator ratings.
+
+Candidate steps use explicit midpoint integration. Let $f(q,\tau,\alpha)$ be the
+bounded velocity above, using the same bounds computed at the interval's start:
+
+$$
+v_0=f(q_k,\tau_k,\alpha),\qquad
+q_{1/2}=q_k+\frac{h}{2}v_0,\qquad
+q_{k+1}=q_k+h\,f\left(q_{1/2},\tau_k+\frac{\alpha h}{2},\alpha\right).
+$$
+
+The governor first tries
+full reference speed, then searches smaller alpha values if the next segment
+fails its pose checks. This is a checked, bounded phase search, not a globally
+time-optimal planner. Defaults are `--dt 0.01` and ten phase-search refinements.
+Every candidate is checked at its endpoint and at 1/4, 1/2, and 3/4 of the joint
+segment, against the corresponding reference times. Rejected candidates are
+never added to the playable path. Accepted segments are independently checked
+again using MuJoCo before playback. For each candidate it checks
+$q_\beta=(1-\beta)q_k+\beta q_{k+1}$ against
+$T_d((1-\beta)\tau_k+\beta\tau_{k+1})$ for
+$\beta\in\{1/4,1/2,3/4,1\}$. When full progress fails, it tests a zero-progress
+correction and bisects the alpha interval ten times, retaining a tested valid
+candidate. If no movement passes, it holds the last checked state. The final
+interval caps alpha at $(T-\tau_k)/h$ so the reference does not overshoot.
+
+`--position-tolerance 0.0001` m and `--orientation-tolerance 0.001` rad bound
+errors against **the pose at tau** at those probes. Proximity to that reference
+point also bounds distance to the geometric position path. It is a stronger
+condition than merely lying somewhere on the same curve. Finite probes do not
+prove an exactly zero error at every continuous instant; physical actuator
+tracking, collision avoidance, and acceleration/jerk limits are outside this
+kinematic implementation. Reported acceleration is a diagnostic only.
+
+The v2 viewer plays the recorded states once and holds the last pose. It does
+not alternate methods or automatically reset, and adds no hidden one-second
+pause. It shows motion time, reference time, alpha, pose errors, the sampled
+desired curve in yellow, and the verified actual path in green. It uses `qpos`
+and `mj_forward()`, not `mj_step()` actuator control. A verification failure
+holds the initial pose instead of replaying a rejected result.
+
+Logs go to a new `runs/trajectory_v2_TIMESTAMP/` directory, or `--output NEW_PATH`:
+
+- `reference.csv`: nominal reference poses/twists versus tau.
+- `clik.csv`: t, tau, alpha, reference-time fraction, desired/native poses,
+  pose and final-goal errors, checked segment errors, joints, derivatives,
+  bound activity, rejected candidate counts, and calculation time.
+- `summary.json`: model and trajectory module, settings, clock endpoints,
+  final-goal errors, maximum checked errors, limits and MuJoCo verification.
+
+Alpha describes the interval ending at each row; row zero uses alpha=0.
+`checked_path_within_tolerance` concerns the accepted prefix even on timeout;
+only `SUCCESS` also means that the entire reference was completed. Motion time
+is distinct from the time Python spends calculating the offline trajectory.
+
+### Selecting and adding a reference module
+
+`trajectory_config.load_profile()` reads `TRAJECTORY_MODULE` at call time,
+using `straight_line_trajectory` by default. `--trajectory-module MODULE` overrides
+it for one v2 run. `unset TRAJECTORY_MODULE` restores the default. Importing the
+loader does not select a module or load a robot.
+
+A new module needs this factory; its internal class name is unrestricted:
+
+```python
+# my_trajectory.py
+# Implement MyTrajectory in this module or import it from your reference code.
+def create_trajectory(start, goal, duration):
+    return MyTrajectory(start, goal, duration)
+```
+
+The returned object must expose:
+
+| Member | Contract |
+|---|---|
+| `start`, `goal` | Requested world-frame SE(3) transforms, shape `(4, 4)` |
+| `duration` | Requested positive nominal duration in seconds |
+| `sample(tau)` | Return `(pose, twist)` for `0 <= tau <= duration` |
+| `pose` | World-frame SE(3) pose of the selected end-effector body origin |
+| `twist` | Finite six-vector `[omega; v]` in the desired body's frame, differentiated with respect to tau |
+
+`sample(0)` and `sample(duration)` must agree with the endpoints. Position and
+orientation should form a smooth reference with a consistent analytic twist;
+returning world linear velocity as the body-twist component is incorrect.
+Additional path parameters, such as arc centers, belong in that module/factory.
+V2 does not depend on a concrete class, a straight-line formula, or `sample_times()`.
+Use `TRAJECTORY_MODULE=my_trajectory` without changing solver/viewer code or
+adding a registry entry.
+
+## V1: archived DLS IK / CLIK comparison
 
 `trajectory_GUI_v1.py` always computes **both** independent joint trajectories:
 pointwise DLS IK and CLIK, with the same initial joints, desired poses, times,
@@ -200,7 +363,8 @@ selects one. RPY angles themselves are not interpolated. The shared time scaling
 gives zero translational and angular velocities at both ends. The desired-body
 twist is $V_d=[\dot s\phi; R_d^\top\dot p_d]$, with
 $\dot s=6u(1-u)/T$ and $\dot p_d=\dot s(p_f-p_0)$.
-V1 samples this reference at motion time $t$.
+V1 samples this reference at motion time $t$; v2 uses virtual time $\tau$ and
+multiplies the nominal twist by alpha in its controller.
 
 `trajectory_solver_v1.py` receives numerical geometry, without loading a robot:
 
@@ -234,7 +398,8 @@ q_{k+1}=\operatorname{clip}\left(q_k+\Delta t\frac{\dot q}{\gamma},q_{\min},q_{\
 $$
 
 V1 advances reference time on schedule even when $\gamma>1$, so the robot can
-lag and leave the desired straight path.
+lag and leave the desired straight path. Its velocity scaling differs from
+v2's constrained velocity solve and adaptive reference clock.
 
 Defaults: `--duration 5`, `--dt 0.01`, `--settle-time 1`, `--gain 5`,
 `--damping 0.001`, `--orientation-scale 0.3`, `--max-iterations 250`,
@@ -294,9 +459,12 @@ planar base as well as its arm.
 | `fk.py`, `jacobian.py` | `run_checks(robot, offsets)` compares analytical results against MuJoCo |
 | `fk_GUI.py` | Verify FK and animate the supplied robot, including `--joint` selection |
 | `ik_GUI.py` | Solve and verify IK, print final joints, and visualize the supplied robot |
-| `straight_line_trajectory.py` | Straight-position / SLERP reference poses and desired-body twists |
-| `trajectory_solver_v1.py` | V1 DLS IK / CLIK comparison |
-| `trajectory_GUI_v1.py` | V1 verification, exports, and alternating playback |
+| `straight_line_trajectory.py` | Shared straight-position / SLERP mathematics plus `create_trajectory()` factory |
+| `trajectory_solver_v1.py` | Preserved v1 DLS IK / CLIK comparison |
+| `trajectory_config.py` | Select a reference module using `TRAJECTORY_MODULE`; invoke its factory explicitly |
+| `trajectory_solver_v2.py` | Bounded CLIK, virtual reference clock, and accepted-segment pose checks |
+| `trajectory_GUI_v1.py` | Preserved v1 verification, exports, and alternating playback |
+| `trajectory_GUI_v2.py` | Load the selected reference/model, verify v2 results with MuJoCo, export and replay once |
 | `viewer_overlays.py` | Shared world grid, desired pose axes/text, and sampled path drawing |
 
 ## Execution flow
@@ -310,7 +478,7 @@ Each FK/Jacobian/IK/trajectory entry point explicitly creates its robot in `main
    new `RobotModel`, with its own MuJoCo model/data and captured home geometry.
 3. FK and Jacobian entry points call `joint_inputs.load_offsets(profile)` and pass
    the offsets alongside the robot. IK and trajectories read `end_effector_inputs.py`
-   separately. V1 compares pointwise DLS IK and CLIK.
+   separately. V1 compares two methods. V2 loads the selected trajectory profile and runs only CLIK.
 4. Verification, output, and viewer helpers receive the robot explicitly. The
    numeric algorithms continue to receive arrays and joint types.
 

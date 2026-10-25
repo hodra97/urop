@@ -48,6 +48,17 @@ def draw_target_axes(scene, target):
                    arrow=True, width=0.006, label="Desired" if index == 0 else "")
 
 
+def draw_path(scene, points, color, max_points=150):
+    """Draw a sampled spatial path; only the display geometry is downsampled."""
+    points = np.asarray(points, dtype=float)
+    if len(points) < 2:
+        return
+    indices = np.unique(np.linspace(0, len(points) - 1, min(max_points, len(points))).astype(int))
+    for start, end in zip(points[indices[:-1]], points[indices[1:]]):
+        if np.linalg.norm(end - start) > 1e-12:
+            _connector(scene, start, end, color, width=3.0)
+
+
 def rotation_to_rpy_deg(rotation):
     """Canonical RPY for Rz(yaw) Ry(pitch) Rx(roll); roll=0 at gimbal lock."""
     cosine_pitch = np.hypot(rotation[0, 0], rotation[1, 0])

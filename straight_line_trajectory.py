@@ -11,6 +11,11 @@ from IK_algorithm import rotation_log
 from jacobian_algorithm import transform_inverse
 
 
+def create_trajectory(start, goal, duration=5.0):
+    """Factory used by trajectory_config; the reference mathematics is shared."""
+    return StraightLineTrajectory(start, goal, duration)
+
+
 class StraightLineTrajectory:
     """Synchronize translation and rotation with cubic time scaling.
 
